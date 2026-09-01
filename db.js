@@ -26,7 +26,7 @@ function ensureDirs() {
 
 function defaultData() {
   const adminUsername = process.env.ADMIN_USERNAME || 'admin';
-  const adminPassword = process.env.ADMIN_PASSWORD || 'immoci2024';
+  const adminPassword = process.env.ADMIN_PASSWORD || 'youknow';
   return {
     users: [
       {
