@@ -25,4 +25,14 @@ function requireAdmin(req, res, next) {
   next();
 }
 
-module.exports = { requireAuth, requireAdmin };
+// Comme requireAuth mais ne bloque pas : utilisé pour le formulaire de contact public.
+function optionalAuth(req, res, next) {
+  const header = req.headers.authorization || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  if (token) {
+    try { req.user = jwt.verify(token, process.env.JWT_SECRET); } catch (e) { /* ignoré */ }
+  }
+  next();
+}
+
+module.exports = { requireAuth, requireAdmin, optionalAuth };

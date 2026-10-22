@@ -76,6 +76,7 @@ router.delete('/:id', (req, res) => {
   db.properties.forEach(p => {
     if (p.agentId === agentId) p.agentId = null; // null = géré par l'admin
   });
+  db.messages.forEach(m => { if (m.toUserId === agentId) m.toUserId = null; });
   db.users.splice(idx, 1);
   persist();
   res.json({ ok: true });

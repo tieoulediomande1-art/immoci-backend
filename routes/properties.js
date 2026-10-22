@@ -23,6 +23,21 @@ const upload = multer({
   }
 });
 
+const CATEGORIES = ['appartement', 'villa', 'maison', 'studio', 'duplex', 'meuble', 'bureau', 'hotel', 'terrain'];
+// Les anciennes annonces sans champ status sont considérées comme publiées.
+function isPublished(p) { return !p.deletedAt && p.status !== 'pending'; }
+// Mise en avant : active tant que la date de fin n'est pas dépassée (pas de tâche de fond).
+function isFeatured(p) { return !!p.featuredUntil && p.featuredUntil > Date.now(); }
+// Version publique : pas de journal interne (références de paiement).
+function publicProp(p) {
+  const { featuredLog, ...rest } = p;
+  return Object.assign({}, rest, { featured: isFeatured(p) });
+}
+// Les biens mis en avant passent en tête, l'ordre interne est conservé.
+function featuredFirst(list) {
+  return [...list.filter(isFeatured), ...list.filter(p => !isFeatured(p))];
+}
+
 function parsePrice(v) {
   const m = String(v || '').match(/[\d\s]+/);
   return m ? parseInt(m[0].replace(/\s/g, '')) || 0 : 0;
@@ -35,11 +50,12 @@ function parsePrice(v) {
 // GET /api/properties  — liste publique avec filtres, tri et pagination
 router.get('/', (req, res) => {
   const db = getDB();
-  let list = db.properties.filter(p => !p.deletedAt);
+  let list = db.properties.filter(isPublished);
 
-  const { type, city, q, pmin, pmax, beds, sort, page, pageSize, agentId } = req.query;
+  const { type, category, city, q, pmin, pmax, beds, sort, page, pageSize, agentId } = req.query;
 
   if (type) list = list.filter(p => p.type === type);
+  if (category) list = list.filter(p => p.category === category);
   if (city) {
     const c = String(city).toLowerCase();
     list = list.filter(p => p.city === c || (p.quarter || '').toLowerCase().includes(c));
@@ -62,12 +78,13 @@ router.get('/', (req, res) => {
   else if (sort === 'price_desc') list.sort((a, b) => parsePrice(b.price) - parsePrice(a.price));
   else if (sort === 'old') list.sort((a, b) => a.createdAt - b.createdAt);
   else list.sort((a, b) => b.createdAt - a.createdAt);
+  list = featuredFirst(list);
 
   const total = list.length;
   const ps = Math.min(parseInt(pageSize) || 9, 50);
   const pg = Math.max(parseInt(page) || 1, 1);
   const start = (pg - 1) * ps;
-  const items = list.slice(start, start + ps);
+  const items = list.slice(start, start + ps).map(publicProp);
 
   res.json({ total, page: pg, pageSize: ps, totalPages: Math.max(1, Math.ceil(total / ps)), items });
 });
@@ -102,11 +119,22 @@ router.get('/stats/summary', requireAuth, (req, res) => {
 });
 
 // GET /api/properties/:id — fiche publique d'une annonce
+router.get('/pending/list', requireAuth, (req, res) => {
+  const db = getDB();
+  let list = db.properties.filter(p => !p.deletedAt && p.status === 'pending');
+  if (req.user.role !== 'admin') list = list.filter(p => p.agentId === req.user.id);
+  list.sort((a, b) => b.createdAt - a.createdAt);
+  res.json(list.map(p => {
+    const owner = db.users.find(u => u.id === p.agentId);
+    return Object.assign({}, p, { ownerName: owner ? owner.name : '' });
+  }));
+});
+
 router.get('/:id', (req, res) => {
   const db = getDB();
-  const p = db.properties.find(x => x.id === parseInt(req.params.id) && !x.deletedAt);
+  const p = db.properties.find(x => x.id === parseInt(req.params.id) && isPublished(x));
   if (!p) return res.status(404).json({ error: 'Annonce introuvable.' });
-  res.json(p);
+  res.json(publicProp(p));
 });
 
 // POST /api/properties — création (auth requise)
@@ -116,11 +144,16 @@ router.post('/', requireAuth, (req, res) => {
   if (!b.title || !b.price) {
     return res.status(400).json({ error: 'Titre et prix sont obligatoires.' });
   }
-  const agentId = req.user.role === 'agent' ? req.user.id : (b.agentId ?? null);
+  const agentId = req.user.role !== 'admin' ? req.user.id : (b.agentId ?? null);
+  const status = req.user.role === 'user' ? 'pending' : 'published';
   const prop = {
     id: db.nextPropertyId++,
     title: b.title,
     type: b.type === 'location' ? 'location' : 'vente',
+    category: CATEGORIES.includes(b.category) ? b.category : '',
+    status,
+    // Seul l'administrateur peut certifier une annonce.
+    certified: req.user.role === 'admin' && b.certified === true,
     city: b.city || 'abidjan',
     quarter: b.quarter || '',
     price: String(b.price),
@@ -146,16 +179,57 @@ router.put('/:id', requireAuth, (req, res) => {
   const db = getDB();
   const p = db.properties.find(x => x.id === parseInt(req.params.id));
   if (!p || p.deletedAt) return res.status(404).json({ error: 'Annonce introuvable.' });
-  if (req.user.role === 'agent' && p.agentId !== req.user.id) {
+  if (req.user.role !== 'admin' && p.agentId !== req.user.id) {
     return res.status(403).json({ error: 'Vous ne pouvez modifier que vos propres annonces.' });
   }
   const b = req.body || {};
   ['title', 'type', 'city', 'quarter', 'price', 'area', 'description', 'contact', 'lat', 'lng'].forEach(f => {
     if (b[f] !== undefined) p[f] = b[f];
   });
+  if (b.category !== undefined) p.category = CATEGORIES.includes(b.category) ? b.category : '';
+  if (req.user.role === 'admin' && b.certified !== undefined) p.certified = b.certified === true;
+  if (req.user.role === 'user') p.status = 'pending'; // modification = nouvelle relecture
   if (b.bedrooms !== undefined) p.bedrooms = parseInt(b.bedrooms) || 0;
   if (b.bathrooms !== undefined) p.bathrooms = parseInt(b.bathrooms) || 0;
   if (req.user.role === 'admin' && b.agentId !== undefined) p.agentId = b.agentId;
+  persist();
+  res.json(p);
+});
+
+// POST /api/properties/:id/feature  { days, ref } — admin : met à la une après paiement
+router.post('/:id/feature', requireAuth, (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: "Cette action est réservée à l'administrateur." });
+  const b = req.body || {};
+  const days = parseInt(b.days, 10);
+  const ref = String(b.ref || '').trim();
+  if (!Number.isInteger(days) || days < 1 || days > 365) return res.status(400).json({ error: 'Durée : entre 1 et 365 jours.' });
+  if (ref.length < 3 || ref.length > 60) return res.status(400).json({ error: 'Indiquez la référence du paiement (3 à 60 caractères).' });
+  const p = getDB().properties.find(x => x.id === parseInt(req.params.id) && !x.deletedAt);
+  if (!p) return res.status(404).json({ error: 'Annonce introuvable.' });
+  // Si déjà à la une, on ajoute la durée à la fin en cours.
+  const start = Math.max(Date.now(), p.featuredUntil || 0);
+  p.featuredUntil = start + days * 24 * 60 * 60 * 1000;
+  p.featuredLog = [...(p.featuredLog || []), { days, ref, at: Date.now() }];
+  persist();
+  res.json({ id: p.id, featured: true, featuredUntil: p.featuredUntil });
+});
+
+// POST /api/properties/:id/unfeature — admin : retire la mise en avant
+router.post('/:id/unfeature', requireAuth, (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: "Cette action est réservée à l'administrateur." });
+  const p = getDB().properties.find(x => x.id === parseInt(req.params.id) && !x.deletedAt);
+  if (!p) return res.status(404).json({ error: 'Annonce introuvable.' });
+  p.featuredUntil = null;
+  persist();
+  res.json({ id: p.id, featured: false });
+});
+
+// POST /api/properties/:id/approve — validation par l'admin
+router.post('/:id/approve', requireAuth, (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: "Cette action est réservée à l'administrateur." });
+  const p = getDB().properties.find(x => x.id === parseInt(req.params.id) && !x.deletedAt);
+  if (!p) return res.status(404).json({ error: 'Annonce introuvable.' });
+  p.status = 'published';
   persist();
   res.json(p);
 });
@@ -165,7 +239,7 @@ router.delete('/:id', requireAuth, (req, res) => {
   const db = getDB();
   const p = db.properties.find(x => x.id === parseInt(req.params.id));
   if (!p || p.deletedAt) return res.status(404).json({ error: 'Annonce introuvable.' });
-  if (req.user.role === 'agent' && p.agentId !== req.user.id) {
+  if (req.user.role !== 'admin' && p.agentId !== req.user.id) {
     return res.status(403).json({ error: 'Vous ne pouvez supprimer que vos propres annonces.' });
   }
   p.deletedAt = Date.now();
@@ -178,7 +252,7 @@ router.post('/:id/restore', requireAuth, (req, res) => {
   const db = getDB();
   const p = db.properties.find(x => x.id === parseInt(req.params.id));
   if (!p || !p.deletedAt) return res.status(404).json({ error: 'Annonce introuvable dans la corbeille.' });
-  if (req.user.role === 'agent' && p.agentId !== req.user.id) {
+  if (req.user.role !== 'admin' && p.agentId !== req.user.id) {
     return res.status(403).json({ error: 'Action non autorisée.' });
   }
   p.deletedAt = null;
@@ -192,7 +266,7 @@ router.delete('/:id/permanent', requireAuth, (req, res) => {
   const idx = db.properties.findIndex(x => x.id === parseInt(req.params.id));
   if (idx === -1) return res.status(404).json({ error: 'Annonce introuvable.' });
   const p = db.properties[idx];
-  if (req.user.role === 'agent' && p.agentId !== req.user.id) {
+  if (req.user.role !== 'admin' && p.agentId !== req.user.id) {
     return res.status(403).json({ error: 'Action non autorisée.' });
   }
   (p.media || []).forEach(m => {
@@ -209,7 +283,7 @@ router.post('/:id/media', requireAuth, upload.array('files', 12), (req, res) => 
   const db = getDB();
   const p = db.properties.find(x => x.id === parseInt(req.params.id));
   if (!p) return res.status(404).json({ error: 'Annonce introuvable.' });
-  if (req.user.role === 'agent' && p.agentId !== req.user.id) {
+  if (req.user.role !== 'admin' && p.agentId !== req.user.id) {
     return res.status(403).json({ error: 'Action non autorisée.' });
   }
   const files = req.files || [];
@@ -229,7 +303,7 @@ router.delete('/:propId/media/:mediaId', requireAuth, (req, res) => {
   const db = getDB();
   const p = db.properties.find(x => x.id === parseInt(req.params.propId));
   if (!p) return res.status(404).json({ error: 'Annonce introuvable.' });
-  if (req.user.role === 'agent' && p.agentId !== req.user.id) {
+  if (req.user.role !== 'admin' && p.agentId !== req.user.id) {
     return res.status(403).json({ error: 'Action non autorisée.' });
   }
   const mid = parseInt(req.params.mediaId);

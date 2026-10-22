@@ -26,7 +26,7 @@ function ensureDirs() {
 
 function defaultData() {
   const adminUsername = process.env.ADMIN_USERNAME || 'admin';
-  const adminPassword = process.env.ADMIN_PASSWORD || 'youknow';
+  const adminPassword = process.env.ADMIN_PASSWORD || 'immoci2024';
   return {
     users: [
       {
@@ -66,6 +66,8 @@ function loadFromDisk() {
 // Chargé une seule fois au démarrage, gardé en mémoire, puis persisté à chaque
 // écriture via persist().
 let db = loadFromDisk();
+db.messages = db.messages || [];
+db.nextMessageId = db.nextMessageId || 1;
 
 function getDB() {
   return db;
