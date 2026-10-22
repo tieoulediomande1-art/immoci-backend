@@ -68,6 +68,8 @@ function loadFromDisk() {
 let db = loadFromDisk();
 db.messages = db.messages || [];
 db.nextMessageId = db.nextMessageId || 1;
+db.featureRequests = db.featureRequests || [];
+db.nextFeatureRequestId = db.nextFeatureRequestId || 1;
 
 function getDB() {
   return db;

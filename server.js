@@ -17,6 +17,7 @@ const authRoutes = require('./routes/auth');
 const propertyRoutes = require('./routes/properties');
 const agentRoutes = require('./routes/agents');
 const messageRoutes = require('./routes/messages');
+const featureRoutes = require('./routes/features');
 
 const app = express();
 app.set('trust proxy', 1); // Render est derrière un proxy : vraie IP pour le limiteur
@@ -31,6 +32,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/properties', propertyRoutes);
 app.use('/api/agents', agentRoutes);
 app.use('/api/messages', messageRoutes);
+app.use('/api/features', featureRoutes);
 
 app.use((req, res) => res.status(404).json({ error: 'Route introuvable.' }));
 
